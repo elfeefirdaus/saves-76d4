@@ -121,6 +121,18 @@ textarea{min-height:92px;resize:vertical}
 .set h3{font-size:17px;margin-bottom:6px}
 .ok{color:var(--lime)}.bad{color:var(--red)}
 body.sheeted .fab{display:none!important}
+/* AI key takeaways */
+.kthd{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-weight:600;font-size:14px;min-height:32px;padding:0}
+.kthd .car{transition:transform .15s;display:inline-block}
+.kthd[aria-expanded="false"] .car{transform:rotate(180deg)}
+.kt{list-style:none;padding:0;margin:8px 0 0;display:flex;flex-direction:column;gap:14px}
+.kt li{display:flex;gap:12px;align-items:flex-start;line-height:1.42;font-size:15.5px}
+.kt .em{flex:none;width:24px;text-align:center;font-size:18px;line-height:1.3}
+.kt b{color:var(--text);font-weight:700}
+.kt .dt{color:var(--muted)}
+.aiby{color:#6b7080;font-size:12px;margin-top:12px}
+.chip.tag.ai{color:#c9cffc;border-style:dashed}
+.kt[hidden]{display:none}
 </style></head><body>
 <div class="wrap" id="app"></div>
 <button class="fab" id="fab" aria-label="Add a save"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add</button>
@@ -327,6 +339,7 @@ function tvQueries(item) {
   var text = [item.title, item.caption].join(' ');
   var q = [];
   if (item.titleEdited && item.title && item.title.length <= 60) q.push(item.title);
+  if (item.ai && item.ai.title && (item.ai.category === 'TV Show' || item.ai.category === 'Movie')) q.push(item.ai.title);
   hashtags(text).forEach(function (t) { if (t.length >= 4 && GENERIC_TAGS.indexOf(t) < 0 && !/^\d+$/.test(t)) q.push(t); });
   var seen = {};
   return q.filter(function (x) { var k = x.toLowerCase(); if (seen[k]) return false; seen[k] = 1; return true; }).slice(0, 6);
@@ -334,7 +347,7 @@ function tvQueries(item) {
 
 // How well a show name matches this save. 0..1
 function showMatchScore(name, item) {
-  var text = [item.title, item.caption].join(' ');
+  var text = [item.title, item.caption, item.ai && (item.ai.category === 'TV Show' || item.ai.category === 'Movie') ? item.ai.title : ''].join(' ');
   var tags = hashtags(text);
   var ctxWords = stripHashtags(text).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   var n = norm(name);
@@ -439,9 +452,10 @@ function filterItems(items, f) {
     if (f.fav && !it.fav) return false;
     if (f.state === 'todo' && it.done) return false;
     if (f.state === 'done' && !it.done) return false;
-    if (f.tag && (it.tags || []).indexOf(f.tag) < 0) return false;
+    if (f.tag && allTags(it).indexOf(f.tag) < 0) return false;
     if (!q) return true;
-    var hay = [it.title, it.caption, it.author, it.authorName, it.notes, it.category, it.url, (it.tags || []).join(' '), it.show && it.show.status === 'confirmed' ? it.show.name : ''].join(' ').toLowerCase();
+    var ai = it.ai || {};
+    var hay = [it.title, ai.title, it.caption, it.author, it.authorName, it.notes, it.category, it.url, allTags(it).join(' '), (ai.takeaways || []).map(function (t) { return t.heading + ' ' + t.detail; }).join(' '), it.show && it.show.status === 'confirmed' ? it.show.name : ''].join(' ').toLowerCase();
     return q.split(/\s+/).every(function (w) { return hay.indexOf(w.replace(/^#/, '')) >= 0; });
   }).sort(function (a, b) { return (b.created || 0) - (a.created || 0); });
 }
@@ -461,7 +475,40 @@ function mergeItems(existing, incoming) {
   return { items: out, added: added, updated: updated };
 }
 
-var api = { extractUrl: extractUrl, cleanUrl: cleanUrl, canonicalKey: canonicalKey, platformOf: platformOf, parseLaunch: parseLaunch, hashtags: hashtags, stripHashtags: stripHashtags, CATEGORIES: CATEGORIES, CAT_IDS: CAT_IDS, catIcon: catIcon, categorise: categorise, tvQueries: tvQueries, showMatchScore: showMatchScore, pickShow: pickShow, rankShows: rankShows, showCard: showCard, showLine: showLine, fromHelper: fromHelper, fromOembed: fromOembed, platformLabel: platformLabel, hostOf: hostOf, ago: ago, cleanTag: cleanTag, filterItems: filterItems, mergeItems: mergeItems, dice: dice, norm: norm };
+
+// ---------- AI enrichment (helper POST /enrich) ----------
+// Filter list kept as numbers so the app never contains these pictures: animals and drinks Fee doesn't want shown.
+var AI_BANNED = [0x1F416, 0x1F437, 0x1F43D, 0x1F417, 0x1F415, 0x1F436, 0x1F429, 0x1F9AE, 0x1F953, 0x1F43A, 0x1F98A, 0x1F356, 0x1F377, 0x1F37A, 0x1F37B, 0x1F378, 0x1F379, 0x1F942, 0x1F943, 0x1F376, 0x1F43E, 0x1F32D].map(function (c) { return String.fromCodePoint(c); });
+function noBanned(t) { t = String(t == null ? '' : t); AI_BANNED.forEach(function (e) { t = t.split(e).join(''); }); return t; }
+function aiStr(v, max) { return noBanned(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max); }
+// Validates a helper /enrich reply. Returns {title,takeaways,category,tags} or null.
+function fromEnrich(j) {
+  if (!j || j.ok === false || typeof j !== 'object') return null;
+  var title = aiStr(j.title, 90);
+  if (title.length < 3) return null;
+  var category = CAT_IDS.indexOf(j.category) >= 0 ? j.category : 'Other';
+  var tk = (Array.isArray(j.takeaways) ? j.takeaways : []).filter(function (t) { return t && typeof t === 'object'; }).map(function (t) {
+    var em = aiStr(t.emoji, 16);
+    if (!/\p{Extended_Pictographic}/u.test(em)) em = catIcon(category);
+    return { emoji: em, heading: aiStr(t.heading, 70), detail: aiStr(t.detail, 240) };
+  }).filter(function (t) { return t.heading.length >= 2 && t.detail.length >= 4; }).slice(0, 3);
+  var tags = [], seen = {};
+  (Array.isArray(j.tags) ? j.tags : []).forEach(function (t) { var v = aiStr(t, 30).toLowerCase().replace(/^#+/, ''); if (v.length >= 2 && !seen[v] && tags.length < 5) { seen[v] = 1; tags.push(v); } });
+  return { title: title, takeaways: tk, category: category, tags: tags };
+}
+function enrichPayload(it) {
+  return { url: it.url, platform: it.platform, title: it.origTitle || it.title || '', caption: it.caption || '', author: it.author || '', authorName: it.authorName || '', image: it.image || '' };
+}
+// Title to show: a title Fee typed or a linked show wins, then the AI title, then the original.
+function displayTitle(it) {
+  if (!it) return '';
+  if (it.titleEdited || (it.show && it.show.status === 'confirmed')) return it.title || '';
+  return (it.ai && it.ai.title) || it.title || '';
+}
+function needsAi(it) { return !!it && !it.ai && it.metaStatus === 'ok' && (it.aiTries || 0) < 3 && !!(it.caption || it.title || it.url); }
+function allTags(it) { var t = (it.tags || []).slice(); ((it.ai && it.ai.tags) || []).forEach(function (x) { if (t.indexOf(x) < 0) t.push(x); }); return t; }
+
+var api = { extractUrl: extractUrl, cleanUrl: cleanUrl, canonicalKey: canonicalKey, platformOf: platformOf, parseLaunch: parseLaunch, hashtags: hashtags, stripHashtags: stripHashtags, CATEGORIES: CATEGORIES, CAT_IDS: CAT_IDS, catIcon: catIcon, categorise: categorise, tvQueries: tvQueries, showMatchScore: showMatchScore, pickShow: pickShow, rankShows: rankShows, showCard: showCard, showLine: showLine, fromHelper: fromHelper, fromOembed: fromOembed, platformLabel: platformLabel, hostOf: hostOf, ago: ago, cleanTag: cleanTag, filterItems: filterItems, mergeItems: mergeItems, dice: dice, norm: norm, fromEnrich: fromEnrich, enrichPayload: enrichPayload, displayTitle: displayTitle, needsAi: needsAi, allTags: allTags, AI_BANNED: AI_BANNED };
 if (typeof module === 'object' && module.exports) module.exports = api;
 root.SavesCore = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -521,6 +568,12 @@ function withTimeout(ms) { var c = window.AbortController ? new AbortController(
 function getJson(url) {
   return fetch(url, { signal: withTimeout(15000), credentials: 'omit', referrerPolicy: 'no-referrer' }).then(function (r) {
     return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok && !(j && j.error)) j = { ok: false, error: 'HTTP ' + r.status }; if (!r.ok) j.ok = false; return j; });
+  });
+}
+
+function postJson(url, body) {
+  return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: withTimeout(45000), credentials: 'omit', referrerPolicy: 'no-referrer' }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (j) { j = j || {}; if (!r.ok) { j.ok = false; j.status = r.status; if (!j.error) j.error = 'HTTP ' + r.status; } return j; });
   });
 }
 
@@ -613,10 +666,57 @@ function enrich(it, force) {
     return dbPut(it);
   }).then(function () {
     delete busy[it.id]; rerender(it.id);
+    if (helperUrl() && (it.metaStatus === 'ok' || it.ai || it.caption) && (force || !it.ai)) return aiEnrich(it, force);
+  }).then(function () {
     if ((it.category === 'TV Show' || it.category === 'Movie') && !it.show && it.metaStatus === 'ok' && !it.showChecked) return findShow(it);
   });
   busy[it.id] = p;
   return p;
+}
+
+// ---------- AI: title, key takeaways, category, tags (helper POST /enrich) ----------
+// Any failure (offline, helper down, daily limit) leaves the save exactly as it was.
+var aiBusy = {}, aiStop = false;
+function aiEnrich(it, force) {
+  var h = helperUrl();
+  if (!h) return Promise.resolve(false);
+  if (aiBusy[it.id]) return aiBusy[it.id];
+  it.aiStatus = 'pending'; rerender(it.id);
+  var body = C.enrichPayload(it); if (force) body.force = true;
+  var p = postJson(h + '/enrich', body).then(function (j) {
+    var ai = C.fromEnrich(j);
+    if (!ai) { var e = new Error((j && j.error) || 'No summary'); e.status = j && j.status; e.limit = j && j.limit; throw e; }
+    ai.model = j.model || ''; ai.at = Date.now(); ai.v = j.v || 1;
+    it.ai = ai; it.aiStatus = 'ok'; it.aiError = ''; it.aiTries = 0;
+    if (it.catAuto !== false && ai.category && (ai.category !== 'Other' || it.category === 'Other')) it.category = ai.category;
+    return true;
+  }).catch(function (e) {
+    it.aiStatus = 'failed'; it.aiError = (e && e.message) || '';
+    if (e && e.status === 429) { if (e.limit === 'daily') aiStop = true; }
+    else it.aiTries = (it.aiTries || 0) + 1;
+    return false;
+  }).then(function (okd) {
+    return dbPut(it).then(function () { delete aiBusy[it.id]; rerender(it.id); return okd; });
+  }, function () { delete aiBusy[it.id]; return false; });
+  aiBusy[it.id] = p;
+  return p;
+}
+// One background pass that adds AI details to saves made before this feature (a few at a time, gently).
+function aiBackfill() {
+  if (!helperUrl() || !db || aiBackfill.running) return;
+  if (navigator.onLine === false) return;
+  var queue = items.filter(function (x) { return C.needsAi(x) && !busy[x.id]; }).slice(0, 30);
+  if (!queue.length) { if (!settings().aiBackfillDone) saveSettings({ aiBackfillDone: Date.now() }); return; }
+  aiBackfill.running = true;
+  var next = function () {
+    var it = queue.shift();
+    if (!it || aiStop) { aiBackfill.running = false; return; }
+    if (it.ai || busy[it.id]) return next();
+    aiEnrich(it).then(function () {
+      if ((it.category === 'TV Show' || it.category === 'Movie') && !it.show && !it.showChecked) return findShow(it);
+    }).catch(function () {}).then(function () { setTimeout(next, 1500); });
+  };
+  next();
 }
 
 function tvSearch(q) { return getJson(TVMAZE + '/search/shows?q=' + encodeURIComponent(q)).then(function (j) { return Array.isArray(j) ? j : []; }, function () { return []; }); }
@@ -687,10 +787,10 @@ function renderList(keepFocus) {
     var sub = it.author ? '@' + it.author : C.hostOf(it.url);
     var mini = '<span class="c">' + C.catIcon(it.category) + ' ' + esc(it.category) + '</span>' +
       (it.show && it.show.status === 'confirmed' ? '<span class="sh">' + esc(it.show.name) + '</span>' : '') +
-      (it.tags || []).slice(0, 3).map(function (t) { return '<span>#' + esc(t) + '</span>'; }).join('');
-    var st = it.metaStatus === 'pending' ? ' \u00b7 <span class="pending"><span class="spin"></span> fetching</span>' : '';
+      C.allTags(it).slice(0, 3).map(function (t) { return '<span>#' + esc(t) + '</span>'; }).join('');
+    var st = it.metaStatus === 'pending' ? ' \u00b7 <span class="pending"><span class="spin"></span> fetching</span>' : (it.aiStatus === 'pending' ? ' \u00b7 <span class="pending"><span class="spin"></span> summarising</span>' : '');
     return '<div class="card' + (it.done ? ' done' : '') + '" data-open="' + esc(it.id) + '">' + thumbHtml(it, 'th') +
-      '<div class="body"><div class="t">' + esc(it.title) + '</div><div class="meta"><span class="au">' + esc(sub) + '</span><span>\u00b7 ' + C.ago(it.created) + '</span>' + st + '</div><div class="mini">' + mini + '</div></div>' +
+      '<div class="body"><div class="t">' + esc(C.displayTitle(it)) + '</div><div class="meta"><span class="au">' + esc(sub) + '</span><span>\u00b7 ' + C.ago(it.created) + '</span>' + st + '</div><div class="mini">' + mini + '</div></div>' +
       '<div class="side"><button class="tick' + (it.done ? ' on' : '') + '" data-done="' + esc(it.id) + '" aria-label="' + (it.done ? 'Mark not done' : 'Mark done') + '"><span class="ring">' + ICONS.check + '</span></button>' +
       '<button class="mark' + (it.fav ? ' on' : '') + '" data-fav="' + esc(it.id) + '" aria-label="' + (it.fav ? 'Remove bookmark' : 'Bookmark') + '">' + ICONS.mark + '</button></div></div>';
   }).join('');
@@ -713,7 +813,15 @@ function renderDetail(id, soft) {
   var hostLbl = it.platform === 'web' ? C.hostOf(it.url) : C.platformLabel(it.platform);
   var by = it.author ? '@' + it.author : (it.authorName || '');
   var catOpts = C.CAT_IDS.map(function (c) { return '<option' + (c === it.category ? ' selected' : '') + ' value="' + esc(c) + '">' + C.catIcon(c) + ' ' + esc(c) + '</option>'; }).join('');
-  var tags = (it.tags || []).map(function (t) { return '<button class="chip tag" data-untag="' + esc(t) + '" aria-label="Remove tag ' + esc(t) + '">#' + esc(t) + ' <span class="x">\u00d7</span></button>'; }).join('');
+  var tags = (it.tags || []).map(function (t) { return '<button class="chip tag" data-untag="' + esc(t) + '" aria-label="Remove tag ' + esc(t) + '">#' + esc(t) + ' <span class="x">\u00d7</span></button>'; }).join('') +
+    ((it.ai && it.ai.tags) || []).filter(function (t) { return (it.tags || []).indexOf(t) < 0; }).map(function (t) { return '<button class="chip tag ai" data-aitag="' + esc(t) + '" aria-label="Show saves tagged ' + esc(t) + '">#' + esc(t) + '</button>'; }).join('');
+  var ai = it.ai, kt = '';
+  if (ai && ai.takeaways && ai.takeaways.length) {
+    kt = '<div class="sec ktsec"><div class="sechd"><button class="kthd" data-act="kt" aria-expanded="true" aria-controls="kt">Key takeaways <span class="car">\u2303</span></button><span>Saved ' + C.ago(it.created) + '</span></div>' +
+      '<ul class="kt" id="kt">' + ai.takeaways.map(function (t) { return '<li><span class="em" aria-hidden="true">' + esc(t.emoji) + '</span><div><b>' + esc(t.heading) + '</b> <span class="dt">\u2013 ' + esc(t.detail) + '</span></div></li>'; }).join('') + '</ul>' +
+      '<div class="aiby">\u2728 AI summary of the post. It can get things wrong.</div></div>';
+  }
+  var aiNote = it.aiStatus === 'pending' && it.metaStatus !== 'pending' ? '<div class="note" id="ainote"><span class="spin"></span> Writing a summary\u2026</div>' : '';
   var status = it.metaStatus === 'pending' ? '<div class="note"><span class="spin"></span> Getting details\u2026</div>'
     : it.metaStatus === 'nohelper' ? '<div class="warn">Saved the link. To fill in the caption and picture for ' + esc(hostLbl) + ' links, add the helper link in <a href="#/settings">Settings</a>, then tap \u21bb.</div>'
     : it.metaStatus === 'failed' ? '<div class="warn">Couldn\u2019t get details right now' + (it.metaError ? ' (' + esc(it.metaError) + ')' : '') + '. The link is saved. Tap \u21bb to try again.</div>' : '';
@@ -731,17 +839,18 @@ function renderDetail(id, soft) {
   app.innerHTML = '<div class="top"><a class="back" href="#/" aria-label="Back to all saves"><span class="ar">\u2039</span> Saves</a><span class="sp"></span><button class="pill" data-act="edit">Edit</button></div>' +
     '<div class="hero">' + (it.thumb ? '<img src="' + esc(it.thumb) + '" alt="">' : (it.image ? '<img src="' + esc(it.image) + '" alt="" referrerpolicy="no-referrer" onerror="this.remove()">' : C.catIcon(it.category))) +
     (by ? '<div class="by">' + pIcon(it.platform) + ' ' + esc(by) + '</div>' : '') + '</div>' +
-    '<h2 class="title" id="dtitle">' + esc(it.title) + '</h2>' +
+    '<h2 class="title" id="dtitle">' + esc(C.displayTitle(it)) + '</h2>' +
     '<div class="row"><a class="open" id="openlink" href="' + esc(it.url) + '" target="_blank" rel="noopener noreferrer">' + pIcon(it.platform) + ' Open in ' + esc(hostLbl) + ' ' + ICONS.ext + '</a><span class="sp"></span>' +
     '<button class="tick' + (it.done ? ' on' : '') + '" data-done="' + esc(it.id) + '" aria-label="' + (it.done ? 'Mark not done' : 'Mark done') + '"><span class="ring">' + ICONS.check + '</span></button>' +
     '<button class="mark' + (it.fav ? ' on' : '') + '" data-fav="' + esc(it.id) + '" aria-label="' + (it.fav ? 'Remove bookmark' : 'Bookmark') + '">' + ICONS.mark + '</button></div>' +
-    status +
+    status + aiNote +
     '<div class="dchips"><label class="catsel"><span style="position:absolute;left:-9999px">Category</span><select id="cat">' + catOpts + '</select></label>' +
     '<button class="chip iconbtn" data-act="refresh" aria-label="Refresh details" style="width:44px;justify-content:center">' + (it.metaStatus === 'pending' ? '<span class="spin"></span>' : ICONS.refresh) + '</button>' +
     '<button class="chip ghost" data-act="addtag">+ Tag</button>' + tags + '</div>' +
-    (it.caption ? '<div class="sec"><div class="sechd"><span>Caption</span><span>Saved ' + C.ago(it.created) + '</span></div><div class="caption clamp" id="cap">' + esc(it.caption) + '</div>' +
+    kt +
+    (it.caption ? '<div class="sec"><div class="sechd"><span>Caption</span><span>' + (kt ? '' : 'Saved ' + C.ago(it.created)) + '</span></div><div class="caption clamp" id="cap">' + esc(it.caption) + '</div>' +
       (it.caption.length > 140 ? '<button class="linkbtn" data-act="more">Show more</button>' : '') + (it.posted ? '<div class="note">Posted ' + esc(it.posted) + (it.authorName ? ' by ' + esc(it.authorName) : '') + '</div>' : '') + '</div>'
-      : '<div class="sec"><div class="sechd"><span>Saved ' + C.ago(it.created) + '</span></div></div>') +
+      : (kt ? '' : '<div class="sec"><div class="sechd"><span>Saved ' + C.ago(it.created) + '</span></div></div>')) +
     show +
     '<div class="sec"><label class="lbl" for="notes">Notes</label><textarea id="notes" placeholder="Why did you save this?">' + esc(it.notes || '') + '</textarea></div>' +
     '<div class="actions"><button class="btn" data-act="copy">Copy link</button><button class="btn danger" data-act="delete">Delete</button></div>';
@@ -782,7 +891,7 @@ function openTag(it) {
   setTimeout(function () { var i = $('#tagin'); if (i) i.focus(); }, 60);
 }
 function openEdit(it) {
-  openSheet('<h3>Edit</h3><label class="lbl" for="edtitle">Title</label><input class="field" id="edtitle" value="' + esc(it.title) + '">' +
+  openSheet('<h3>Edit</h3><label class="lbl" for="edtitle">Title</label><input class="field" id="edtitle" value="' + esc(C.displayTitle(it)) + '">' +
     '<div class="note" style="word-break:break-all">' + esc(it.url) + '</div>' +
     '<div class="rowb"><button class="btn" data-act="close">Cancel</button><button class="btn pri" data-act="saveedit">Save</button></div>');
 }
@@ -801,6 +910,7 @@ document.addEventListener('click', function (e) {
   if (d.f) { if (d.f === 'all') { filt.cat = 'All'; filt.fav = false; filt.state = ''; } else if (d.f === 'fav') filt.fav = !filt.fav; else if (d.f === 'untag') filt.tag = ''; else filt.state = filt.state === d.f ? '' : d.f; renderList(); return; }
   if (d.cat) { filt.cat = filt.cat === d.cat ? 'All' : d.cat; renderList(); return; }
   if (d.open && t.tagName !== 'BUTTON' && t.tagName !== 'A') { location.hash = '#/i/' + encodeURIComponent(d.open); return; }
+  if (d.aitag) { filt.tag = d.aitag; location.hash = '#/'; return; }
   if (d.pick) { var ti = $('#tagin'); ti.value = d.pick; return; }
   if (d.untag && it) { it.tags = it.tags.filter(function (z) { return z !== d.untag; }); dbPut(it); renderDetail(it.id, true); return; }
   var a = d.act;
@@ -823,11 +933,12 @@ document.addEventListener('click', function (e) {
   if (a === 'export') return exportBackup();
   if (a === 'import') return $('#impfile').click();
   if (!it) return;
-  if (a === 'refresh') { enrich(it, true).then(function () { toast(it.metaStatus === 'ok' ? 'Details updated' : 'Couldn\u2019t update details'); }); return; }
+  if (a === 'refresh') { enrich(it, true).then(function () { toast(it.aiStatus === 'ok' ? 'Details and summary updated' : (it.metaStatus === 'ok' ? 'Details updated' : 'Couldn\u2019t update details')); }); return; }
+  if (a === 'kt') { var kt = $('#kt'); if (kt) { var hid = kt.hasAttribute('hidden'); if (hid) kt.removeAttribute('hidden'); else kt.setAttribute('hidden', ''); t.setAttribute('aria-expanded', hid ? 'true' : 'false'); } return; }
   if (a === 'addtag') return openTag(it);
   if (a === 'savetag') { var tg = C.cleanTag($('#tagin').value); if (tg) { it.tags = (it.tags || []).filter(function (z) { return z !== tg; }).concat([tg]); dbPut(it); } closeSheet(); renderDetail(it.id, true); return; }
   if (a === 'edit') return openEdit(it);
-  if (a === 'saveedit') { var nt = $('#edtitle').value.trim(); if (nt && nt !== it.title) { it.title = nt; it.titleEdited = true; dbPut(it); } closeSheet(); renderDetail(it.id, true); return; }
+  if (a === 'saveedit') { var nt = $('#edtitle').value.trim(); if (nt && nt !== C.displayTitle(it)) { if (!it.titleEdited && !it.origTitle) it.origTitle = it.title; it.title = nt; it.titleEdited = true; dbPut(it); } closeSheet(); renderDetail(it.id, true); return; }
   if (a === 'more') { $('#cap').classList.toggle('clamp'); t.textContent = $('#cap').classList.contains('clamp') ? 'Show more' : 'Show less'; return; }
   if (a === 'copy') { (navigator.clipboard ? navigator.clipboard.writeText(it.url) : Promise.reject()).then(function () { toast('Link copied'); }, function () { toast(it.url); }); return; }
   if (a === 'delete') { if (confirm('Delete this save? This can\u2019t be undone.')) { dbDel(it.id).then(function () { items = items.filter(function (z) { return z.id !== it.id; }); toast('Deleted'); location.hash = '#/'; }); } return; }
@@ -898,10 +1009,12 @@ function start() {
     }
     route();
     items.forEach(function (it) { if (it.metaStatus === 'pending' && !busy[it.id]) enrich(it); });
+    setTimeout(aiBackfill, 2500);
   });
 }
 start();
-window.__saves = { helperUrl: helperUrl, items: function () { return items; }, addLink: addLink, enrich: enrich, findShow: findShow };
+window.addEventListener('online', function () { setTimeout(aiBackfill, 2000); });
+window.__saves = { helperUrl: helperUrl, items: function () { return items; }, addLink: addLink, enrich: enrich, findShow: findShow, aiEnrich: aiEnrich, aiBackfill: aiBackfill };
 })();
 </script>
 </body></html>
