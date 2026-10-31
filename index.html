@@ -133,6 +133,12 @@ body.sheeted .fab{display:none!important}
 .aiby{color:#6b7080;font-size:12px;margin-top:12px}
 .chip.tag.ai{color:#c9cffc;border-style:dashed}
 .kt[hidden]{display:none}
+.kthd .ktn{background:var(--card2);color:var(--text);border-radius:999px;padding:1px 8px;font-size:12px}
+.kt.clip li.more{display:none}
+.kt.long{gap:12px}
+.kt.long li{font-size:15px}
+.ktall{margin-top:6px}
+#kt[hidden]{display:none}
 </style></head><body>
 <div class="wrap" id="app"></div>
 <button class="fab" id="fab" aria-label="Add a save"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>Add</button>
@@ -479,6 +485,7 @@ function mergeItems(existing, incoming) {
 // ---------- AI enrichment (helper POST /enrich) ----------
 // Filter list kept as numbers so the app never contains these pictures: animals and drinks Fee doesn't want shown.
 var AI_BANNED = [0x1F416, 0x1F437, 0x1F43D, 0x1F417, 0x1F415, 0x1F436, 0x1F429, 0x1F9AE, 0x1F953, 0x1F43A, 0x1F98A, 0x1F356, 0x1F377, 0x1F37A, 0x1F37B, 0x1F378, 0x1F379, 0x1F942, 0x1F943, 0x1F376, 0x1F43E, 0x1F32D].map(function (c) { return String.fromCodePoint(c); });
+var AI_MAX_TAKEAWAYS = 10;   // list posts (carousels of places or products) can have up to 10
 function noBanned(t) { t = String(t == null ? '' : t); AI_BANNED.forEach(function (e) { t = t.split(e).join(''); }); return t; }
 function aiStr(v, max) { return noBanned(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max); }
 // Validates a helper /enrich reply. Returns {title,takeaways,category,tags} or null.
@@ -491,7 +498,7 @@ function fromEnrich(j) {
     var em = aiStr(t.emoji, 16);
     if (!/\p{Extended_Pictographic}/u.test(em)) em = catIcon(category);
     return { emoji: em, heading: aiStr(t.heading, 70), detail: aiStr(t.detail, 240) };
-  }).filter(function (t) { return t.heading.length >= 2 && t.detail.length >= 4; }).slice(0, 3);
+  }).filter(function (t) { return t.heading.length >= 2 && t.detail.length >= 4; }).slice(0, AI_MAX_TAKEAWAYS);
   var tags = [], seen = {};
   (Array.isArray(j.tags) ? j.tags : []).forEach(function (t) { var v = aiStr(t, 30).toLowerCase().replace(/^#+/, ''); if (v.length >= 2 && !seen[v] && tags.length < 5) { seen[v] = 1; tags.push(v); } });
   return { title: title, takeaways: tk, category: category, tags: tags };
@@ -817,8 +824,10 @@ function renderDetail(id, soft) {
     ((it.ai && it.ai.tags) || []).filter(function (t) { return (it.tags || []).indexOf(t) < 0; }).map(function (t) { return '<button class="chip tag ai" data-aitag="' + esc(t) + '" aria-label="Show saves tagged ' + esc(t) + '">#' + esc(t) + '</button>'; }).join('');
   var ai = it.ai, kt = '';
   if (ai && ai.takeaways && ai.takeaways.length) {
-    kt = '<div class="sec ktsec"><div class="sechd"><button class="kthd" data-act="kt" aria-expanded="true" aria-controls="kt">Key takeaways <span class="car">\u2303</span></button><span>Saved ' + C.ago(it.created) + '</span></div>' +
-      '<ul class="kt" id="kt">' + ai.takeaways.map(function (t) { return '<li><span class="em" aria-hidden="true">' + esc(t.emoji) + '</span><div><b>' + esc(t.heading) + '</b> <span class="dt">\u2013 ' + esc(t.detail) + '</span></div></li>'; }).join('') + '</ul>' +
+    var nT = ai.takeaways.length, long = nT > 5;
+    kt = '<div class="sec ktsec"><div class="sechd"><button class="kthd" data-act="kt" aria-expanded="true" aria-controls="kt">Key takeaways' + (long ? ' <span class="ktn">' + nT + '</span>' : '') + ' <span class="car">\u2303</span></button><span>Saved ' + C.ago(it.created) + '</span></div>' +
+      '<div id="kt"><ul class="kt' + (long ? ' long clip' : '') + '" id="ktl">' + ai.takeaways.map(function (t, i) { return '<li' + (long && i >= 5 ? ' class="more"' : '') + '><span class="em" aria-hidden="true">' + esc(t.emoji) + '</span><div><b>' + esc(t.heading) + '</b> <span class="dt">\u2013 ' + esc(t.detail) + '</span></div></li>'; }).join('') + '</ul>' +
+      (long ? '<button class="linkbtn ktall" data-act="ktall">Show all ' + nT + '</button>' : '') + '</div>' +
       '<div class="aiby">\u2728 AI summary of the post. It can get things wrong.</div></div>';
   }
   var aiNote = it.aiStatus === 'pending' && it.metaStatus !== 'pending' ? '<div class="note" id="ainote"><span class="spin"></span> Writing a summary\u2026</div>' : '';
@@ -934,6 +943,7 @@ document.addEventListener('click', function (e) {
   if (a === 'import') return $('#impfile').click();
   if (!it) return;
   if (a === 'refresh') { enrich(it, true).then(function () { toast(it.aiStatus === 'ok' ? 'Details and summary updated' : (it.metaStatus === 'ok' ? 'Details updated' : 'Couldn\u2019t update details')); }); return; }
+  if (a === 'ktall') { var kl = $('#ktl'); if (kl) { var c = kl.classList.toggle('clip'); t.textContent = c ? 'Show all ' + kl.children.length : 'Show fewer'; } return; }
   if (a === 'kt') { var kt = $('#kt'); if (kt) { var hid = kt.hasAttribute('hidden'); if (hid) kt.removeAttribute('hidden'); else kt.setAttribute('hidden', ''); t.setAttribute('aria-expanded', hid ? 'true' : 'false'); } return; }
   if (a === 'addtag') return openTag(it);
   if (a === 'savetag') { var tg = C.cleanTag($('#tagin').value); if (tg) { it.tags = (it.tags || []).filter(function (z) { return z !== tg; }).concat([tg]); dbPut(it); } closeSheet(); renderDetail(it.id, true); return; }
