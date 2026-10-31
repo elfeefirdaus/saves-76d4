@@ -485,7 +485,7 @@ function mergeItems(existing, incoming) {
 // ---------- AI enrichment (helper POST /enrich) ----------
 // Filter list kept as numbers so the app never contains these pictures: animals and drinks Fee doesn't want shown.
 var AI_BANNED = [0x1F416, 0x1F437, 0x1F43D, 0x1F417, 0x1F415, 0x1F436, 0x1F429, 0x1F9AE, 0x1F953, 0x1F43A, 0x1F98A, 0x1F356, 0x1F377, 0x1F37A, 0x1F37B, 0x1F378, 0x1F379, 0x1F942, 0x1F943, 0x1F376, 0x1F43E, 0x1F32D].map(function (c) { return String.fromCodePoint(c); });
-var AI_MAX_TAKEAWAYS = 10;   // list posts (carousels of places or products) can have up to 10
+var AI_MAX_TAKEAWAYS = 15;   // list posts (carousels of places or products) can have up to 15
 function noBanned(t) { t = String(t == null ? '' : t); AI_BANNED.forEach(function (e) { t = t.split(e).join(''); }); return t; }
 function aiStr(v, max) { return noBanned(v).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max); }
 // Validates a helper /enrich reply. Returns {title,takeaways,category,tags} or null.
@@ -497,7 +497,7 @@ function fromEnrich(j) {
   var tk = (Array.isArray(j.takeaways) ? j.takeaways : []).filter(function (t) { return t && typeof t === 'object'; }).map(function (t) {
     var em = aiStr(t.emoji, 16);
     if (!/\p{Extended_Pictographic}/u.test(em)) em = catIcon(category);
-    return { emoji: em, heading: aiStr(t.heading, 70), detail: aiStr(t.detail, 240) };
+    return { emoji: em, heading: aiStr(t.heading, 90), detail: aiStr(t.detail, 240) };
   }).filter(function (t) { return t.heading.length >= 2 && t.detail.length >= 4; }).slice(0, AI_MAX_TAKEAWAYS);
   var tags = [], seen = {};
   (Array.isArray(j.tags) ? j.tags : []).forEach(function (t) { var v = aiStr(t, 30).toLowerCase().replace(/^#+/, ''); if (v.length >= 2 && !seen[v] && tags.length < 5) { seen[v] = 1; tags.push(v); } });
